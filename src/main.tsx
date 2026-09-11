@@ -6,12 +6,17 @@ import ReactDOM from "react-dom/client";
 // Import the generated route tree
 import { routeTree } from "./routeTree.gen";
 
+import { assertSafeRuntimeConfiguration } from "./config/runtime";
 import reportWebVitals from "./sdk/core/internal/reportWebVitals.ts";
 import "./styles.css";
 
 // Initialize Creao platform SDK
 import { APP_CONFIG } from "./sdk/core/global.ts";
 export { APP_CONFIG }; // for backward compatibility
+
+// Production deployments must fail closed when the authoritative backend
+// configuration is missing or insecure.
+assertSafeRuntimeConfiguration();
 
 // Create a QueryClient instance
 const queryClient = new QueryClient({

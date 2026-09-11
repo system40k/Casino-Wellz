@@ -190,11 +190,66 @@ export const useGameStore = create<GameState>()(
         },
 
         endGame: (result) => {
-          const { currentGame, betAmount, processGameResult: processResult } = get();
+          const { currentGame, processGameResult: processResult } = get();
           if (!currentGame) return;
 
           // Process the game result with enhanced handling
           void processResult(result);
+        },
+
+        placeBet: (amount) => {
+          if (!Number.isFinite(amount) || amount < GAME_CONFIG.MIN_BET || amount > GAME_CONFIG.MAX_BET) {
+            throw new Error(`Bet amount must be between ${GAME_CONFIG.MIN_BET} and ${GAME_CONFIG.MAX_BET}`);
+          }
+          if (amount > get().balance) {
+            throw new Error('Insufficient balance');
+          }
+          set({ betAmount: amount });
+        },
+
+        cashOut: () => {
+          set({
+            isPlaying: false,
+            currentGame: null,
+            currentGameResult: null,
+            isProcessingResult: false,
+          });
+        },
+
+        updateBalance: (amount, reason = 'manual_adjustment') => {
+          if (!Number.isFinite(amount)) {
+            throw new Error('Balance adjustment must be a finite number');
+          }
+          set((state: any) => {
+            const nextBalance = state.balance + amount;
+            if (nextBalance < 0) {
+              throw new Error('Balance cannot be negative');
+            }
+            state.balance = nextBalance;
+          });
+          trackEvent('balance_updated', { amount, reason });
+        },
+
+        toggleAutoPlay: () => {
+          set((state: any) => {
+            state.autoPlay = !state.autoPlay;
+          });
+        },
+
+        toggleSound: () => {
+          set((state: any) => {
+            state.soundEnabled = !state.soundEnabled;
+          });
+        },
+
+        toggleQuickSpin: () => {
+          set((state: any) => {
+            state.quickSpin = !state.quickSpin;
+          });
+        },
+
+        resetGame: () => {
+          set({ ...initialState });
         },
 
         processGameResult: async (result: Omit<GameResult, 'timestamp' | 'id'>) => {
@@ -299,6 +354,52 @@ export const useGameStore = create<GameState>()(
           set({ currentGameResult: null });
         },
 
+        getLastGameResult: () => get().gameHistory[0] ?? null,
+
+        getTotalWins: () => get().gameHistory.reduce((total, game) => total + game.win, 0),
+
+        getGamesPlayed: (gameType) => {
+          const history = get().gameHistory;
+          return gameType ? history.filter((game) => game.game === gameType).length : history.length;
+        },
+
+        canPlaceBet: (amount = get().betAmount) => {
+          return Number.isFinite(amount)
+            && amount >= GAME_CONFIG.MIN_BET
+            && amount <= GAME_CONFIG.MAX_BET
+            && amount <= get().balance
+            && !get().isProcessingResult;
+        },
+
+        getGameStatistics: () => {
+          const history = get().gameHistory;
+          const totalSpins = history.length;
+          const winningGames = history.filter((game) => game.win > 0);
+          const totalWins = winningGames.reduce((total, game) => total + game.win, 0);
+          const totalWagered = history.reduce((total, game) => total + game.bet, 0);
+          const biggestWin = winningGames.reduce((max, game) => Math.max(max, game.win), 0);
+          const counts = history.reduce<Partial<Record<GameType, number>>>((acc, game) => {
+            acc[game.game] = (acc[game.game] ?? 0) + 1;
+            return acc;
+          }, {});
+          const favoriteEntry = Object.entries(counts).sort((a, b) => (b[1] ?? 0) - (a[1] ?? 0))[0];
+
+          return {
+            totalWins,
+            totalSpins,
+            winRate: totalSpins > 0 ? (winningGames.length / totalSpins) * 100 : 0,
+            biggestWin,
+            totalWagered,
+            favoriteGame: favoriteEntry
+              ? { game: favoriteEntry[0] as GameType, count: favoriteEntry[1] ?? 0 }
+              : null,
+            recentWins: winningGames.slice(0, 10).map((game) => ({
+              amount: game.win,
+              timestamp: game.timestamp,
+            })),
+          };
+        },
+
         isSessionActive: () => {
           const { sessionStart } = get();
           if (!sessionStart) return false;
@@ -317,8 +418,6 @@ export const useGameStore = create<GameState>()(
           }
           return streak;
         },
-
-        // ... other actions and selectors ...
       })),
       {
         name: GAME_CONFIG.STORAGE_KEY,
