@@ -42,6 +42,7 @@ export interface IFramePlatformRequestMessage {
 	method: string;
 	status: number;
 	responseHeaders: Record<string, string>;
+	error?: unknown;
 }
 
 /** a ui event */
