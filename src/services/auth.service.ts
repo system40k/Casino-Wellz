@@ -1,9 +1,13 @@
 import { UserORM, type UserModel } from '@/components/data/orm/orm_user';
 import { WalletORM } from '@/components/data/orm/orm_wallet';
+import { runtimeConfig } from '@/config/runtime';
 
 /**
- * Web3 Wallet Authentication Service
- * Handles user authentication via crypto wallet signatures
+ * Legacy demo authentication service.
+ *
+ * This service intentionally has no production capability. Production identity
+ * is established only through production-auth.service.ts and the server-issued
+ * wallet challenge/session flow.
  */
 
 export interface AuthenticatedUser {
@@ -11,37 +15,31 @@ export interface AuthenticatedUser {
   isAuthenticated: boolean;
 }
 
+function requireDemoMode(operation: string): void {
+  if (runtimeConfig.mode !== 'demo') {
+    throw new Error(`${operation} is disabled in production; use the authoritative authentication backend`);
+  }
+}
+
 class AuthService {
   private userOrm = UserORM.getInstance();
   private walletOrm = WalletORM.getInstance();
 
-  /**
-   * Connect wallet and authenticate user
-   * Creates new user if doesn't exist
-   */
   async connectWallet(walletAddress: string): Promise<AuthenticatedUser> {
-    // Normalize wallet address to lowercase
+    requireDemoMode('Legacy wallet authentication');
     const normalizedAddress = walletAddress.toLowerCase();
-
-    // Check if user exists
     const existingUsers = await this.userOrm.getUserByWalletAddress(normalizedAddress);
 
     if (existingUsers.length > 0) {
       const user = existingUsers[0];
-
-      // Update last login
       const updatedUser = await this.userOrm.setUserByWalletAddress(normalizedAddress, {
         ...user,
         last_login_at: Math.floor(Date.now() / 1000).toString(),
       });
 
-      return {
-        user: updatedUser[0],
-        isAuthenticated: true,
-      };
+      return { user: updatedUser[0], isAuthenticated: true };
     }
 
-    // Create new user
     const newUsers = await this.userOrm.insertUser([
       {
         wallet_address: normalizedAddress,
@@ -50,69 +48,52 @@ class AuthService {
         last_login_at: Math.floor(Date.now() / 1000).toString(),
       } as UserModel,
     ]);
-
     const newUser = newUsers[0];
 
-    // Initialize wallets for supported currencies
     const currencies = ['ETH', 'BTC', 'USDT'];
     await this.walletOrm.insertWallet(
-      currencies.map((currency) => ({
-        user_id: newUser.id,
-        currency,
-        available_balance: '0',
-        locked_balance: '0',
-      } as any))
+      currencies.map(
+        (currency) =>
+          ({
+            user_id: newUser.id,
+            currency,
+            available_balance: '0',
+            locked_balance: '0',
+          }) as any,
+      ),
     );
 
-    return {
-      user: newUser,
-      isAuthenticated: true,
-    };
+    return { user: newUser, isAuthenticated: true };
   }
 
-  /**
-   * Connect Bitcoin wallet and authenticate user
-   * Uses BTC mainnet deposit address
-   */
   async connectBTCWallet(btcAddress: string): Promise<AuthenticatedUser> {
-    // Validate BTC address format
+    requireDemoMode('Legacy BTC address authentication');
     const addressPattern = /^[13bc][a-zA-HJ-NP-Z0-9]{25,62}$/;
     if (!addressPattern.test(btcAddress)) {
       throw new Error('Invalid BTC address format');
     }
 
-    // For BTC, we use the deposit address as the wallet identifier
-    // This allows multiple users to fund the same casino address
-    const existingUsers = await this.userOrm.getUserByWalletAddress(btcAddress.toLowerCase());
-
-    // For BTC flow, each connection gets a fresh user (since the address is shared)
-    // Or we can link by IP/browser fingerprint in production
-    // For now, create a new user or get existing
+    const normalizedAddress = btcAddress.toLowerCase();
+    const existingUsers = await this.userOrm.getUserByWalletAddress(normalizedAddress);
     if (existingUsers.length > 0) {
       const user = existingUsers[0];
-      const updatedUser = await this.userOrm.setUserByWalletAddress(btcAddress.toLowerCase(), {
+      const updatedUser = await this.userOrm.setUserByWalletAddress(normalizedAddress, {
         ...user,
         last_login_at: Math.floor(Date.now() / 1000).toString(),
       });
-
-      return {
-        user: updatedUser[0],
-        isAuthenticated: true,
-      };
+      return { user: updatedUser[0], isAuthenticated: true };
     }
 
     const newUsers = await this.userOrm.insertUser([
       {
-        wallet_address: btcAddress.toLowerCase(),
+        wallet_address: normalizedAddress,
         kyc_level: 0,
         is_banned: false,
         last_login_at: Math.floor(Date.now() / 1000).toString(),
       } as UserModel,
     ]);
-
     const newUser = newUsers[0];
 
-    // Initialize wallet for BTC only
     await this.walletOrm.insertWallet([
       {
         user_id: newUser.id,
@@ -122,51 +103,34 @@ class AuthService {
       } as any,
     ]);
 
-    return {
-      user: newUser,
-      isAuthenticated: true,
-    };
+    return { user: newUser, isAuthenticated: true };
   }
 
-  /**
-   * Disconnect wallet
-   */
   async disconnectWallet(): Promise<void> {
-    // In a real implementation, this would clear session/tokens
-    // For this demo, we just return
-    return;
+    requireDemoMode('Legacy wallet disconnect');
   }
 
-  /**
-   * Get user by wallet address
-   */
   async getUserByWallet(walletAddress: string): Promise<UserModel | null> {
+    requireDemoMode('Legacy browser user lookup');
     const normalizedAddress = walletAddress.toLowerCase();
     const users = await this.userOrm.getUserByWalletAddress(normalizedAddress);
     return users.length > 0 ? users[0] : null;
   }
 
-  /**
-   * Check if user is banned
-   */
   async isUserBanned(userId: string): Promise<boolean> {
+    requireDemoMode('Legacy browser restriction lookup');
     const users = await this.userOrm.getUserById(userId);
     return users.length > 0 ? users[0].is_banned : true;
   }
 
-  /**
-   * Get user KYC level
-   */
   async getUserKycLevel(userId: string): Promise<number> {
+    requireDemoMode('Legacy browser KYC lookup');
     const users = await this.userOrm.getUserById(userId);
     return users.length > 0 ? users[0].kyc_level : 0;
   }
 
-  /**
-   * Update user KYC level
-   * In a real system this would be driven by an external KYC provider.
-   */
   async setUserKycLevel(userId: string, level: number): Promise<UserModel> {
+    requireDemoMode('Legacy browser KYC mutation');
     const users = await this.userOrm.getUserById(userId);
     if (users.length === 0) {
       throw new Error('User not found');
@@ -177,7 +141,6 @@ class AuthService {
       ...user,
       kyc_level: level,
     });
-
     return updated;
   }
 }
