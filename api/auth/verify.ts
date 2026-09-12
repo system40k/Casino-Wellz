@@ -30,8 +30,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 		}
 
 		const ip = getClientIp(req);
-		const allowed = await consumeRateLimit(config, `verify:${ip}:${challengeId}`, 8, 60);
-		if (!allowed) return res.status(429).json({ error: "rate_limited" });
+
+		// The global per-IP bucket prevents challenge-ID rotation from bypassing
+		// the narrower replay/guessing limit for a specific challenge.
+		const [ipAllowed, challengeAllowed] = await Promise.all([
+			consumeRateLimit(config, `verify-ip:${ip}`, 30, 60),
+			consumeRateLimit(config, `verify:${ip}:${challengeId}`, 8, 60),
+		]);
+		if (!ipAllowed || !challengeAllowed) return res.status(429).json({ error: "rate_limited" });
 
 		const challenge = await getChallenge(config, challengeId);
 		if (!challenge || challenge.consumed_at || new Date(challenge.expires_at).getTime() <= Date.now()) {
