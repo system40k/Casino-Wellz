@@ -30,8 +30,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 		}
 
 		const ip = getClientIp(req);
-		const allowed = await consumeRateLimit(config, `verify:${ip}:${challengeId}`, 8, 60);
-		if (!allowed) return res.status(429).json({ error: "rate_limited" });
+		const [ipAllowed, challengeAllowed] = await Promise.all([
+			consumeRateLimit(config, `verify-ip:${ip}`, 30, 60),
+			consumeRateLimit(config, `verify:${ip}:${challengeId}`, 8, 60),
+		]);
+		if (!ipAllowed || !challengeAllowed) return res.status(429).json({ error: "rate_limited" });
 
 		const challenge = await getChallenge(config, challengeId);
 		if (!challenge || challenge.consumed_at || new Date(challenge.expires_at).getTime() <= Date.now()) {
@@ -51,8 +54,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 			return res.status(401).json({ error: "invalid_signature" });
 		}
 
-		// Atomic one-time consumption is intentionally performed after signature
-		// verification. Only one concurrent verifier can consume the challenge.
 		if (!(await consumeChallenge(config, challenge.id))) {
 			return res.status(409).json({ error: "challenge_already_consumed" });
 		}
