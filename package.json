@@ -14,7 +14,7 @@
     "format": "biome check --write --unsafe .",
     "format:check": "biome check .",
     "format:quiet": "biome check --write --unsafe --log-level=warn .",
-    "lint:production": "biome lint src/config/runtime.ts src/config/runtime.test.ts src/services/production-game.service.ts src/services/production-auth.service.ts src/hooks/useWallet.ts src/hooks/useBTCWallet.ts src/contexts/AuthContext.tsx src/routes/index.tsx api/_lib/auth.ts api/_lib/auth.test.ts api/auth/challenge.ts api/auth/verify.ts api/auth/session.ts api/auth/logout.ts api/auth/revoke-all.ts",
+    "lint:production": "biome lint src/config/runtime.ts src/config/runtime.test.ts src/services/production-game.service.ts src/services/production-auth.service.ts src/services/auth.service.ts src/hooks/useWallet.ts src/hooks/useBTCWallet.ts src/contexts/AuthContext.tsx src/routes/index.tsx api/_lib/auth.ts api/_lib/auth.test.ts api/auth/challenge.ts api/auth/verify.ts api/auth/session.ts api/auth/logout.ts api/auth/revoke-all.ts",
     "lint:radix": "grep -l -r '<SelectItem' src | xargs -r eslint --config config/eslint/eslint.radix.config.js",
     "lint:mcp": "eslint src --config config/eslint/eslint.mcp.config.js",
     "lint:validate": "node config/eslint/validate-configs.js",
