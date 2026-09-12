@@ -1,12 +1,17 @@
-import { useState, useCallback, useEffect } from 'react';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { btcService, type BTCTransaction } from '@/services/btc.service';
-import { authService } from '@/services/auth.service';
-import { gameService } from '@/services/game.service';
+import { useCallback, useState } from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { UserModel } from '@/components/data/orm/orm_user';
+import { runtimeConfig } from '@/config/runtime';
+import { authService } from '@/services/auth.service';
+import { btcService, type BTCTransaction } from '@/services/btc.service';
+import { gameService } from '@/services/game.service';
 
 /**
- * Hook for Bitcoin wallet management on mainnet
+ * Hook for Bitcoin wallet management in demo mode.
+ *
+ * A deposit address is not an authentication credential. The legacy BTC flow is
+ * therefore intentionally unavailable in production until a server-authoritative
+ * BTC ownership/authentication design exists.
  */
 export function useBTCWallet() {
   const [currentUser, setCurrentUser] = useState<UserModel | null>(null);
@@ -16,18 +21,16 @@ export function useBTCWallet() {
   const [walletStatus, setWalletStatus] = useState<'disconnected' | 'connected' | 'monitoring'>('disconnected');
   const queryClient = useQueryClient();
 
-  /**
-   * Connect wallet by registering deposit address
-   */
   const connectWallet = useCallback(async () => {
     setIsConnecting(true);
     setConnectionError(null);
 
     try {
-      const depositAddress = btcService.getDepositAddress();
+      if (runtimeConfig.mode === 'production') {
+        throw new Error('BTC address-based authentication is disabled in production');
+      }
 
-      // Validate address format - using the validation method from btcService
-      // This is a simple regex check: must be valid Bitcoin address format
+      const depositAddress = btcService.getDepositAddress();
       const addressPattern = /^[13bc][a-zA-HJ-NP-Z0-9]{25,62}$/;
       if (!addressPattern.test(depositAddress)) {
         throw new Error('Invalid BTC deposit address configured');
@@ -37,9 +40,7 @@ export function useBTCWallet() {
       setBTCAddress(depositAddress);
       setCurrentUser(result.user);
       setWalletStatus('connected');
-
       queryClient.invalidateQueries({ queryKey: ['btc-wallet'] });
-
       return result;
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Failed to connect wallet';
@@ -51,11 +52,10 @@ export function useBTCWallet() {
     }
   }, [queryClient]);
 
-  /**
-   * Disconnect wallet
-   */
   const disconnectWallet = useCallback(async () => {
-    await authService.disconnectWallet();
+    if (runtimeConfig.mode === 'demo') {
+      await authService.disconnectWallet();
+    }
     setBTCAddress(null);
     setCurrentUser(null);
     setConnectionError(null);
@@ -63,53 +63,18 @@ export function useBTCWallet() {
     queryClient.clear();
   }, [queryClient]);
 
-  /**
-   * Monitor incoming transaction
-   */
-  const monitorDeposit = useCallback(
-    async (txid: string) => {
-      if (!currentUser) {
-        throw new Error('User not connected');
-      }
-
-      setWalletStatus('monitoring');
-
-      try {
-        const tx = await btcService.monitorTransaction(txid, (updatedTx) => {
-          queryClient.setQueryData(['btc-deposit', txid], updatedTx);
-        });
-
-        if (!tx) {
-          throw new Error('Transaction monitoring timeout');
-        }
-
-        if (tx.confirmations >= 3) {
-          await updateBalance(currentUser.id, tx);
-        }
-
-        setWalletStatus('connected');
-        return tx;
-      } catch (error) {
-        console.error('Error monitoring deposit:', error);
-        setWalletStatus('connected');
-        throw error;
-      }
-    },
-    [currentUser, queryClient],
-  );
-
-  /**
-   * Update user balance after confirmed deposit
-   */
   const updateBalance = useCallback(
     async (userId: string, tx: BTCTransaction) => {
-      const wallet = await gameService.getWalletBalance(userId, 'BTC');
+      if (runtimeConfig.mode !== 'demo') {
+        throw new Error('Browser-side BTC settlement is disabled in production');
+      }
 
+      const wallet = await gameService.getWalletBalance(userId, 'BTC');
       if (!wallet) {
         throw new Error('BTC wallet not found');
       }
 
-      const currentBalance = parseFloat(wallet.available_balance);
+      const currentBalance = Number.parseFloat(wallet.available_balance);
       const newBalance = (currentBalance + tx.value).toString();
 
       const walletOrm = await import('@/components/data/orm/orm_wallet');
@@ -130,7 +95,7 @@ export function useBTCWallet() {
           status: transactionOrm.TransactionStatus.COMPLETED,
           game_session_id: null,
           metadata: JSON.stringify({
-            method: 'btc-mainnet',
+            method: 'btc-demo',
             txid: tx.txid,
             confirmations: tx.confirmations,
           }),
@@ -143,6 +108,37 @@ export function useBTCWallet() {
     [queryClient],
   );
 
+  const monitorDeposit = useCallback(
+    async (txid: string) => {
+      if (runtimeConfig.mode !== 'demo') {
+        throw new Error('Browser-side BTC deposit monitoring is disabled in production');
+      }
+      if (!currentUser) {
+        throw new Error('User not connected');
+      }
+
+      setWalletStatus('monitoring');
+      try {
+        const tx = await btcService.monitorTransaction(txid, (updatedTx) => {
+          queryClient.setQueryData(['btc-deposit', txid], updatedTx);
+        });
+        if (!tx) {
+          throw new Error('Transaction monitoring timeout');
+        }
+        if (tx.confirmations >= 3) {
+          await updateBalance(currentUser.id, tx);
+        }
+        setWalletStatus('connected');
+        return tx;
+      } catch (error) {
+        console.error('Error monitoring deposit:', error);
+        setWalletStatus('connected');
+        throw error;
+      }
+    },
+    [currentUser, queryClient, updateBalance],
+  );
+
   return {
     currentUser,
     btcAddress,
@@ -153,13 +149,10 @@ export function useBTCWallet() {
     connectWallet,
     disconnectWallet,
     monitorDeposit,
-    depositAddress: btcService.getDepositAddress(),
+    depositAddress: runtimeConfig.mode === 'demo' ? btcService.getDepositAddress() : null,
   };
 }
 
-/**
- * Hook to get BTC address balance from Mempool
- */
 export function useBTCBalance(address: string | null) {
   return useQuery({
     queryKey: ['btc-balance', address],
@@ -167,16 +160,13 @@ export function useBTCBalance(address: string | null) {
       if (!address) return null;
       return await btcService.getAddressInfo(address);
     },
-    enabled: !!address,
-    refetchInterval: 10000,
-    refetchOnWindowFocus: true,
+    enabled: runtimeConfig.mode === 'demo' && !!address,
+    refetchInterval: runtimeConfig.mode === 'demo' ? 10000 : false,
+    refetchOnWindowFocus: runtimeConfig.mode === 'demo',
     staleTime: 5000,
   });
 }
 
-/**
- * Hook to get address transactions
- */
 export function useBTCTransactions(address: string | null) {
   return useQuery({
     queryKey: ['btc-transactions', address],
@@ -184,30 +174,27 @@ export function useBTCTransactions(address: string | null) {
       if (!address) return [];
       return await btcService.getAddressTransactions(address);
     },
-    enabled: !!address,
-    refetchInterval: 15000,
+    enabled: runtimeConfig.mode === 'demo' && !!address,
+    refetchInterval: runtimeConfig.mode === 'demo' ? 15000 : false,
     staleTime: 5000,
   });
 }
 
-/**
- * Hook to process BTC deposit
- */
 export function useBTCDeposit(onSuccess?: () => void) {
   const queryClient = useQueryClient();
 
   return useMutation({
     mutationFn: async ({ txid }: { txid: string }) => {
+      if (runtimeConfig.mode !== 'demo') {
+        throw new Error('BTC deposits are disabled until the authoritative payment phase is complete');
+      }
       const tx = await btcService.getTransaction(txid);
-
       if (!tx) {
         throw new Error('Transaction not found');
       }
-
       if (tx.confirmations < 3) {
         throw new Error(`Transaction needs ${3 - tx.confirmations} more confirmations`);
       }
-
       return tx;
     },
     onSuccess: () => {
@@ -217,9 +204,6 @@ export function useBTCDeposit(onSuccess?: () => void) {
   });
 }
 
-/**
- * Hook to get BTC price in USD
- */
 export function useBTCPrice() {
   return useQuery({
     queryKey: ['btc-price'],
