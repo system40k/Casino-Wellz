@@ -1,5 +1,5 @@
 import { UserORM, type UserModel } from '@/components/data/orm/orm_user';
-import { WalletORM } from '@/components/data/orm/orm_wallet';
+import { WalletORM, type WalletModel } from '@/components/data/orm/orm_wallet';
 import { runtimeConfig } from '@/config/runtime';
 
 /**
@@ -59,7 +59,7 @@ class AuthService {
             currency,
             available_balance: '0',
             locked_balance: '0',
-          }) as any,
+          }) as WalletModel,
       ),
     );
 
@@ -100,7 +100,7 @@ class AuthService {
         currency: 'BTC',
         available_balance: '0',
         locked_balance: '0',
-      } as any,
+      } as WalletModel,
     ]);
 
     return { user: newUser, isAuthenticated: true };
