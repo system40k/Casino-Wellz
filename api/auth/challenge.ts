@@ -27,8 +27,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 		const address = normalizeEvmAddress(req.body?.address);
 		const chainId = normalizeChainId(req.body?.chainId);
 		const ip = getClientIp(req);
-		const allowed = await consumeRateLimit(config, `challenge:${ip}:${address}`, 10, 60);
-		if (!allowed) return res.status(429).json({ error: "rate_limited" });
+
+		const [ipAllowed, walletAllowed] = await Promise.all([
+			consumeRateLimit(config, `challenge-ip:${ip}`, 30, 60),
+			consumeRateLimit(config, `challenge:${ip}:${address}`, 10, 60),
+		]);
+		if (!ipAllowed || !walletAllowed) return res.status(429).json({ error: "rate_limited" });
 
 		const issuedAt = new Date();
 		const expiresAt = new Date(issuedAt.getTime() + config.challengeTtlSeconds * 1000);
