@@ -1,41 +1,131 @@
-import { useState, useCallback, useEffect } from 'react';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { authService } from '@/services/auth.service';
-import { gameService } from '@/services/game.service';
+import { useCallback, useEffect, useState } from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { UserModel } from '@/components/data/orm/orm_user';
 import type { WalletModel } from '@/components/data/orm/orm_wallet';
+import { runtimeConfig } from '@/config/runtime';
+import { authService } from '@/services/auth.service';
+import { gameService } from '@/services/game.service';
+import { productionAuthService, type AuthSession } from '@/services/production-auth.service';
+
+type Eip1193Provider = {
+  request(args: { method: string; params?: unknown[] | Record<string, unknown> }): Promise<unknown>;
+};
+
+function getInjectedProvider(): Eip1193Provider | null {
+  return (window as Window & { ethereum?: Eip1193Provider }).ethereum ?? null;
+}
+
+function utf8ToHex(value: string): string {
+  return `0x${Array.from(new TextEncoder().encode(value), (byte) => byte.toString(16).padStart(2, '0')).join('')}`;
+}
+
+function parseInjectedAddress(value: unknown): string {
+  if (typeof value !== 'string' || !/^0x[a-fA-F0-9]{40}$/.test(value)) {
+    throw new Error('Wallet returned an invalid EVM address');
+  }
+  return value.toLowerCase();
+}
+
+function parseInjectedChainId(value: unknown): number {
+  if (typeof value !== 'string' || !/^0x[a-fA-F0-9]+$/.test(value)) {
+    throw new Error('Wallet returned an invalid chain ID');
+  }
+  const chainId = Number.parseInt(value, 16);
+  if (!Number.isSafeInteger(chainId) || chainId <= 0) {
+    throw new Error('Wallet returned an invalid chain ID');
+  }
+  return chainId;
+}
 
 /**
- * Custom hook for wallet management
+ * Custom hook for wallet management.
+ *
+ * Demo mode preserves the generated-wallet fixture used by the prototype.
+ * Production mode never treats a browser-supplied address as authenticated:
+ * it requests the real injected wallet account, signs the backend challenge,
+ * and relies on the HttpOnly server session created by productionAuthService.
  */
 export function useWallet() {
   const [connectedAddress, setConnectedAddress] = useState<string | null>(null);
   const [currentUser, setCurrentUser] = useState<UserModel | null>(null);
+  const [productionSession, setProductionSession] = useState<AuthSession | null>(null);
   const [isConnecting, setIsConnecting] = useState(false);
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const queryClient = useQueryClient();
 
-  // Simulate wallet connection (in production, use Web3 library like ethers.js)
-  const connectWallet = useCallback(async () => {
-    // Generate a demo wallet address
-    const demoAddress = `0x${Math.random().toString(16).substring(2, 42)}`;
+  useEffect(() => {
+    if (runtimeConfig.mode !== 'production') return;
 
+    let cancelled = false;
+    productionAuthService
+      .getSession()
+      .then((session) => {
+        if (cancelled) return;
+        setProductionSession(session);
+        setConnectedAddress(session.user.address);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setProductionSession(null);
+        setConnectedAddress(null);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const connectWallet = useCallback(async () => {
     setIsConnecting(true);
     setConnectionError(null);
 
     try {
+      if (runtimeConfig.mode === 'production') {
+        const provider = getInjectedProvider();
+        if (!provider) {
+          throw new Error('No compatible browser wallet detected');
+        }
+
+        const accounts = await provider.request({ method: 'eth_requestAccounts' });
+        if (!Array.isArray(accounts) || accounts.length === 0) {
+          throw new Error('Wallet did not provide an account');
+        }
+
+        const address = parseInjectedAddress(accounts[0]);
+        const chainId = parseInjectedChainId(await provider.request({ method: 'eth_chainId' }));
+        const session = await productionAuthService.authenticateWallet({
+          address,
+          chainId,
+          signMessage: async (message) => {
+            const signature = await provider.request({
+              method: 'personal_sign',
+              params: [utf8ToHex(message), address],
+            });
+            if (typeof signature !== 'string') {
+              throw new Error('Wallet did not return a signature');
+            }
+            return signature;
+          },
+        });
+
+        setConnectedAddress(session.user.address);
+        setProductionSession(session);
+        setCurrentUser(null);
+        queryClient.invalidateQueries({ queryKey: ['wallet'] });
+        return { user: null, isAuthenticated: true, session };
+      }
+
+      const demoAddress = `0x${Math.random().toString(16).substring(2, 42)}`;
       const result = await authService.connectWallet(demoAddress);
       setConnectedAddress(demoAddress);
       setCurrentUser(result.user);
-
-      // Invalidate queries to refetch data
       queryClient.invalidateQueries({ queryKey: ['wallet'] });
-
       return result;
     } catch (error) {
-      const errorMessage = error instanceof Error
-        ? error.message
-        : 'Failed to connect wallet. Please check your network connection and try again.';
+      const errorMessage =
+        error instanceof Error
+          ? error.message
+          : 'Failed to connect wallet. Please check your network connection and try again.';
 
       console.error('Failed to connect wallet:', error);
       setConnectionError(errorMessage);
@@ -46,7 +136,13 @@ export function useWallet() {
   }, [queryClient]);
 
   const disconnectWallet = useCallback(async () => {
-    await authService.disconnectWallet();
+    if (runtimeConfig.mode === 'production') {
+      await productionAuthService.logout();
+      setProductionSession(null);
+    } else {
+      await authService.disconnectWallet();
+    }
+
     setConnectedAddress(null);
     setCurrentUser(null);
     setConnectionError(null);
@@ -55,6 +151,9 @@ export function useWallet() {
 
   const setUserKycLevel = useCallback(
     async (level: number) => {
+      if (runtimeConfig.mode === 'production') {
+        throw new Error('KYC state is server-authoritative in production');
+      }
       if (!currentUser) {
         throw new Error('User not connected');
       }
@@ -68,6 +167,7 @@ export function useWallet() {
   return {
     connectedAddress,
     currentUser,
+    productionSession,
     isConnected: !!connectedAddress,
     isConnecting,
     connectionError,
@@ -87,10 +187,10 @@ export function useWalletBalances(userId: string | null, currency: string = 'ETH
       if (!userId) return null;
       return await gameService.getWalletBalance(userId, currency);
     },
-    enabled: !!userId,
-    refetchInterval: 1000, // Refetch every 1 second for real-time updates
-    refetchOnWindowFocus: true,
-    staleTime: 0, // Always consider data stale for immediate updates
+    enabled: runtimeConfig.mode === 'demo' && !!userId,
+    refetchInterval: runtimeConfig.mode === 'demo' ? 1000 : false,
+    refetchOnWindowFocus: runtimeConfig.mode === 'demo',
+    staleTime: 0,
   });
 }
 
@@ -105,43 +205,50 @@ export function useUserWallets(userId: string | null) {
 
       const currencies = ['ETH', 'BTC', 'USDT'];
       const wallets = await Promise.all(
-        currencies.map(currency => gameService.getWalletBalance(userId, currency))
+        currencies.map((currency) => gameService.getWalletBalance(userId, currency)),
       );
 
-      return wallets.filter((w): w is WalletModel => w !== null);
+      return wallets.filter((wallet): wallet is WalletModel => wallet !== null);
     },
-    enabled: !!userId,
+    enabled: runtimeConfig.mode === 'demo' && !!userId,
   });
 }
 
 /**
- * Hook for deposit functionality (simulation)
+ * Hook for deposit functionality (simulation only).
  */
 export function useDeposit() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: async ({ userId, currency, amount }: { userId: string; currency: string; amount: string }) => {
-      // In production, this would integrate with actual blockchain
-      // For demo, we'll add to balance directly via wallet update
-      const wallet = await gameService.getWalletBalance(userId, currency);
+    mutationFn: async ({
+      userId,
+      currency,
+      amount,
+    }: {
+      userId: string;
+      currency: string;
+      amount: string;
+    }) => {
+      if (runtimeConfig.mode !== 'demo') {
+        throw new Error('Browser-side deposits are disabled in production');
+      }
 
+      const wallet = await gameService.getWalletBalance(userId, currency);
       if (!wallet) {
         throw new Error('Wallet not found');
       }
 
-      const currentBalance = parseFloat(wallet.available_balance);
-      const depositAmount = parseFloat(amount);
+      const currentBalance = Number.parseFloat(wallet.available_balance);
+      const depositAmount = Number.parseFloat(amount);
       const newBalance = (currentBalance + depositAmount).toString();
 
-      // Update wallet
       const walletOrm = await import('@/components/data/orm/orm_wallet');
       await walletOrm.WalletORM.getInstance().setWalletByCurrencyUserId(currency, userId, {
         ...wallet,
         available_balance: newBalance,
       });
 
-      // Create deposit transaction
       const transactionOrm = await import('@/components/data/orm/orm_transaction');
       await transactionOrm.TransactionORM.getInstance().insertTransaction([
         {
