@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { authService } from '@/services/auth.service';
+import { runtimeConfig } from '@/config/runtime';
+import { productionAuthService } from '@/services/production-auth.service';
 
 type User = {
   id: string;
@@ -20,11 +20,7 @@ type AuthContextType = {
   isAuthenticated: boolean;
   isLoading: boolean;
   login: (email: string, password: string) => Promise<void>;
-  register: (data: {
-    email: string;
-    password: string;
-    name: string;
-  }) => Promise<void>;
+  register: (data: { email: string; password: string; name: string }) => Promise<void>;
   logout: () => Promise<void>;
   loginWithGoogle: () => Promise<void>;
   loginWithFacebook: () => Promise<void>;
@@ -37,174 +33,82 @@ type AuthContextType = {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
+function userFromSession(address: string): User {
+  const now = new Date().toISOString();
+  return {
+    id: address,
+    walletAddress: address,
+    is2FAEnabled: false,
+    isVerified: true,
+    kycStatus: 'none',
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+function unsupported(method: string): never {
+  throw new Error(`${method} is not implemented by the authoritative authentication backend`);
+}
+
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<User | null>(null);
   const [isLoading, setIsLoading] = useState(true);
-  const navigate = useNavigate();
 
-  // Check if user is logged in on mount
   useEffect(() => {
+    let cancelled = false;
+
     const checkAuth = async () => {
       try {
-        // TODO: Implement token refresh and validation
-        const token = localStorage.getItem('auth_token');
-        if (token) {
-          // Validate token and get user data
-          // const userData = await authService.getMe();
-          // setUser(userData);
-        }
-      } catch (error) {
-        console.error('Auth check failed:', error);
-        localStorage.removeItem('auth_token');
+        if (runtimeConfig.mode !== 'production') return;
+        const session = await productionAuthService.getSession();
+        if (!cancelled) setUser(userFromSession(session.user.address));
+      } catch {
+        if (!cancelled) setUser(null);
       } finally {
-        setIsLoading(false);
+        if (!cancelled) setIsLoading(false);
       }
     };
 
-    checkAuth();
+    void checkAuth();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
-  const login = async (email: string, password: string) => {
-    try {
-      setIsLoading(true);
-      // TODO: Implement login logic
-      // const { token, user: userData } = await authService.login(email, password);
-      // localStorage.setItem('auth_token', token);
-      // setUser(userData);
-      // navigate('/dashboard');
-    } catch (error) {
-      console.error('Login failed:', error);
-      throw error;
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const register = async (data: { email: string; password: string; name: string }) => {
-    try {
-      setIsLoading(true);
-      // TODO: Implement registration logic
-      // await authService.register(data);
-      // await login(data.email, data.password);
-    } catch (error) {
-      console.error('Registration failed:', error);
-      throw error;
-    } finally {
-      setIsLoading(false);
-    }
-  };
+  const login = async (_email: string, _password: string) => unsupported('Password login');
+  const register = async (_data: { email: string; password: string; name: string }) =>
+    unsupported('Registration');
 
   const logout = async () => {
+    setIsLoading(true);
     try {
-      setIsLoading(true);
-      // TODO: Implement logout logic
-      // await authService.logout();
-      localStorage.removeItem('auth_token');
+      if (runtimeConfig.mode === 'production') {
+        await productionAuthService.logout();
+      }
       setUser(null);
-      navigate('/login');
-    } catch (error) {
-      console.error('Logout failed:', error);
-      throw error;
     } finally {
       setIsLoading(false);
     }
   };
 
-  const loginWithGoogle = async () => {
-    try {
-      setIsLoading(true);
-      // TODO: Implement Google OAuth
-      // const { token, user: userData } = await authService.loginWithGoogle();
-      // localStorage.setItem('auth_token', token);
-      // setUser(userData);
-      // navigate('/dashboard');
-    } catch (error) {
-      console.error('Google login failed:', error);
-      throw error;
-    } finally {
-      setIsLoading(false);
-    }
-  };
+  const loginWithGoogle = async () => unsupported('Google login');
+  const loginWithFacebook = async () => unsupported('Facebook login');
 
-  const loginWithFacebook = async () => {
-    try {
-      setIsLoading(true);
-      // TODO: Implement Facebook OAuth
-      // const { token, user: userData } = await authService.loginWithFacebook();
-      // localStorage.setItem('auth_token', token);
-      // setUser(userData);
-      // navigate('/dashboard');
-    } catch (error) {
-      console.error('Facebook login failed:', error);
-      throw error;
-    } finally {
-      setIsLoading(false);
-    }
-  };
+  // A raw address/signature pair is insufficient because production wallet auth
+  // must begin with a server-issued one-time challenge. useWallet owns that flow.
+  const loginWithWallet = async (_address: string, _signature: string) =>
+    unsupported('Legacy wallet login');
 
-  const loginWithWallet = async (address: string, signature: string) => {
-    try {
-      setIsLoading(true);
-      // TODO: Implement wallet login
-      // const { token, user: userData } = await authService.loginWithWallet(address, signature);
-      // localStorage.setItem('auth_token', token);
-      // setUser(userData);
-      // navigate('/dashboard');
-    } catch (error) {
-      console.error('Wallet login failed:', error);
-      throw error;
-    } finally {
-      setIsLoading(false);
-    }
-  };
+  const enable2FA = async (): Promise<{ secret: string; qrCodeUrl: string }> =>
+    unsupported('Two-factor authentication');
 
-  const enable2FA = async (): Promise<{ secret: string; qrCodeUrl: string }> => {
-    try {
-      // TODO: Implement 2FA enable
-      // return await authService.enable2FA();
-      return { secret: '', qrCodeUrl: '' };
-    } catch (error) {
-      console.error('Failed to enable 2FA:', error);
-      throw error;
-    }
-  };
+  const verify2FA = async (_token: string): Promise<boolean> => false;
+  const resetPassword = async (_email: string) => unsupported('Password reset');
+  const updateProfile = async (_data: Partial<User>) => unsupported('Profile mutation');
 
-  const verify2FA = async (token: string) => {
-    try {
-      // TODO: Implement 2FA verification
-      // const result = await authService.verify2FA(token);
-      // return result;
-      return true;
-    } catch (error) {
-      console.error('2FA verification failed:', error);
-      throw error;
-    }
-  };
-
-  const resetPassword = async (email: string) => {
-    try {
-      // TODO: Implement password reset
-      // await authService.resetPassword(email);
-    } catch (error) {
-      console.error('Password reset failed:', error);
-      throw error;
-    }
-  };
-
-  const updateProfile = async (data: Partial<User>) => {
-    try {
-      // TODO: Implement profile update
-      // const updatedUser = await authService.updateProfile(data);
-      // setUser(prev => (prev ? { ...prev, ...updatedUser } : null));
-    } catch (error) {
-      console.error('Profile update failed:', error);
-      throw error;
-    }
-  };
-
-  const value = {
+  const value: AuthContextType = {
     user,
-    isAuthenticated: !!user,
+    isAuthenticated: user !== null,
     isLoading,
     login,
     register,
